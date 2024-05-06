@@ -42,7 +42,7 @@ export class AuthService {
       };
     } catch (error) {
       if (error.response && error.response.status === 401) {
-        throw new NotFoundException("Invalid username or password");
+        throw new UnauthorizedException("Invalid username or password");
       } else {
         throw error; 
       }
