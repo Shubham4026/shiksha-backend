@@ -19,11 +19,13 @@ import axios, { AxiosInstance, AxiosRequestConfig } from "axios"
 import { ErrorResponseTypeOrm } from 'src/error-response-typeorm';
 import { isUUID } from 'class-validator';
 import { UserSearchDto } from 'src/user/dto/user-search.dto';
-
+import { UserTenantMapping } from "src/userTenantMapping/entities/user-tenant-mapping.entity";
+import { Tenants } from "src/userTenantMapping/entities/tenant.entity";
 
 @Injectable()
 export class PostgresUserService {
   axios = require("axios");
+
   constructor(
     // private axiosInstance: AxiosInstance,
     @InjectRepository(User)
@@ -33,18 +35,23 @@ export class PostgresUserService {
     @InjectRepository(Field)
     private fieldsRepository: Repository<Field>,
     @InjectRepository(CohortMembers)
-    private cohortMemberRepository: Repository<CohortMembers>
+    private cohortMemberRepository: Repository<CohortMembers>,
+    @InjectRepository(UserTenantMapping)
+    private userTenantMappingRepository: Repository<UserTenantMapping>,
+    @InjectRepository(Tenants)
+    private tenantsRepository: Repository<Tenants>,
   ) { }
-  async  searchUser(tenantId: string,
+  async searchUser(tenantId: string,
     request: any,
     response: any,
-    userSearchDto: UserSearchDto){
+    userSearchDto: UserSearchDto) {
     try {
       let findData = await this.findAllUserDetails(userSearchDto);
-      if(!findData){
-      return new SuccessResponse({
-        statusCode: HttpStatus.BAD_REQUEST,
-        message: 'No Data Found For User',});
+      if (!findData) {
+        return new SuccessResponse({
+          statusCode: HttpStatus.BAD_REQUEST,
+          message: 'No Data Found For User',
+        });
       }
       return new SuccessResponse({
         statusCode: HttpStatus.OK,
@@ -59,7 +66,7 @@ export class PostgresUserService {
     }
   }
 
-  async findAllUserDetails(userSearchDto){
+  async findAllUserDetails(userSearchDto) {
     let { limit, page, filters } = userSearchDto;
 
     let offset = 0;
@@ -92,8 +99,8 @@ export class PostgresUserService {
     try {
       if (!isUUID(userData.userId)) {
         return new SuccessResponse({
-            statusCode: HttpStatus.BAD_REQUEST,
-            message: 'Please Enter Valid User ID',
+          statusCode: HttpStatus.BAD_REQUEST,
+          message: 'Please Enter Valid User ID',
         });
       }
       const result = {
@@ -106,13 +113,13 @@ export class PostgresUserService {
         this.findFilledValues(userData.userId),
         this.findUserDetails(userData.userId)
       ]);
-      if(!userDetails){
+      if (!userDetails) {
         return new SuccessResponse({
           statusCode: HttpStatus.NOT_FOUND,
           message: 'User Not Found',
         });
       }
-      if(!userData.fieldValue){
+      if (!userData.fieldValue) {
         return new SuccessResponse({
           statusCode: HttpStatus.OK,
           message: 'Ok.',
@@ -338,6 +345,42 @@ export class PostgresUserService {
       userCreateDto.createdBy = decoded?.sub
       userCreateDto.updatedBy = decoded?.sub
 
+      //Check duplicate field entry
+      if (userCreateDto.fieldValues) {
+        let field_value_array = userCreateDto.fieldValues.split("|");
+        const validateField = await this.validateFieldValues(field_value_array);
+
+        if(validateField == false){
+          return new ErrorResponseTypeOrm({
+            statusCode: HttpStatus.CONFLICT,
+            errorMessage: "Duplicate fieldId found in fieldValues.",
+          });
+        }
+      }
+
+      // Check if tenant array is not empty
+      const tenantIds = userCreateDto.tenantId;
+      const userId = userCreateDto.userId;
+      let errors = [];
+
+      if (!tenantIds || tenantIds.length === 0) {
+        return new SuccessResponse({
+          statusCode: HttpStatus.BAD_REQUEST,
+          message: "Tenants array cannot be empty.",
+        });
+      }
+
+      //Check tenent is exist or not
+      for (const tenantId of tenantIds) {
+        const validate = await this.validateUserTenantMapping(userId, tenantId);
+        if (validate == false) {
+          return new ErrorResponseTypeOrm({
+            statusCode: HttpStatus.BAD_REQUEST,
+            errorMessage: `Tenant ${tenantId} does not exist.`,
+          });
+        }
+      }
+
       userCreateDto.username = userCreateDto.username.toLocaleLowerCase();
       const userSchema = new UserCreateDto(userCreateDto);
 
@@ -365,24 +408,40 @@ export class PostgresUserService {
         }
       );
       userCreateDto.userId = resKeycloak;
+
+
+
+
+
+      if (errors.length > 0) {
+        return {
+          statusCode: HttpStatus.BAD_REQUEST,
+          errorCount: errors.length,
+          errors,
+        };
+      }
+
+
       let result = await this.createUserInDatabase(request, userCreateDto, cohortId);
-      
-      let field_value_array = userCreateDto.fieldValues?.split("|");
+
       let fieldData = {};
-      if (result && field_value_array?.length > 0) {
-        let userId = result?.userId;
-        for (let i = 0; i < field_value_array?.length; i++) {
-          let fieldValues = field_value_array[i].split(":");
-          fieldData = {
-            fieldId: fieldValues[0],
-            value: fieldValues[1]
-          }
-          let result = await this.updateCustomFields(userId, fieldData);
-          if (!result) {
-            return new ErrorResponseTypeOrm({
-              statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-              errorMessage:  `Error is ${result}`,
-            });
+      if (userCreateDto.fieldValues) {
+        let field_value_array = userCreateDto.fieldValues.split("|");
+        if (result && field_value_array?.length > 0) {
+          let userId = result?.userId;
+          for (let i = 0; i < field_value_array?.length; i++) {
+            let fieldValues = field_value_array[i].split(":");
+            fieldData = {
+              fieldId: fieldValues[0],
+              value: fieldValues[1]
+            }
+            let result = await this.updateCustomFields(userId, fieldData);
+            if (!result) {
+              return new ErrorResponseTypeOrm({
+                statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+                errorMessage: `Error is ${result}`,
+              });
+            }
           }
         }
       }
@@ -394,7 +453,7 @@ export class PostgresUserService {
     } catch (e) {
       return new ErrorResponseTypeOrm({
         statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-        errorMessage:  `Error is ${e}`,
+        errorMessage: `Error is ${e}`,
       });
     }
   }
@@ -419,14 +478,14 @@ export class PostgresUserService {
     user.name = userCreateDto?.name
     user.role = userCreateDto?.role
     user.mobile = Number(userCreateDto?.mobile) || null,
-    user.tenantId = userCreateDto?.tenantId
+      user.tenantId = null
     user.createdBy = userCreateDto?.createdBy
     user.updatedBy = userCreateDto?.updatedBy
     user.userId = userCreateDto?.userId,
-    user.state = userCreateDto?.state,
-    user.district = userCreateDto?.district,
-    user.address = userCreateDto?.address,
-    user.pincode = userCreateDto?.pincode
+      user.state = userCreateDto?.state,
+      user.district = userCreateDto?.district,
+      user.address = userCreateDto?.address,
+      user.pincode = userCreateDto?.pincode
 
     if (userCreateDto?.dob) {
       user.dob = new Date(userCreateDto.dob);
@@ -436,14 +495,48 @@ export class PostgresUserService {
       let cohortData = {
         userId: result?.userId,
         role: result?.role,
-        // createdBy:result?.userId,
-        // updatedBy:result?.userId,
         tenantId: result?.tenantId,
         cohortId: cohortId
       }
       await this.addCohortMember(cohortData);
+
+      let tenantsData = {
+        userId: result?.userId,
+        tenantIds: userCreateDto?.tenantId,
+      }
+      await this.assignUserToTenant(tenantsData, request);
     }
     return result;
+  }
+
+  async assignUserToTenant(tenantsData, request) {
+    try {
+      const tenantIds = tenantsData.tenantIds;
+      const userId = tenantsData.userId;
+      let result = [];
+      let errors = [];
+
+      for (const tenantId of tenantIds) {
+        const data = await this.userTenantMappingRepository.save({
+          userId: userId,
+          tenantId: tenantId,
+          createdBy: request['user'].userId,
+          updatedBy: request['user'].userId
+        })
+      }
+    } catch (error) {
+      throw new Error(error)
+    }
+  }
+
+  public async validateUserTenantMapping(userId: string, tenantId: string) {
+    // check if tenant exists
+    const tenantExist = await this.tenantsRepository.findOne({ where: { tenantId: tenantId } });
+    if (!tenantExist) {
+      return false
+    } else {
+      return true
+    }
   }
 
   async addCohortMember(cohortData) {
@@ -568,6 +661,19 @@ export class PostgresUserService {
         errorMessage: apiResponse.errors,
       });
     }
+  }
+
+  public async validateFieldValues(field_value_array: string[]) {
+    let encounteredKeys = []
+    for (const fieldValue of field_value_array) {
+      const [fieldId] = fieldValue.split(":").map(value => value.trim());
+
+      if (encounteredKeys.includes(fieldId)) {
+        return false
+      }
+      encounteredKeys.push(fieldId);
+
+    };
   }
 
 }
