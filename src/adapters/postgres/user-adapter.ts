@@ -259,9 +259,25 @@ export class PostgresUserService {
       whereClause.username = username;
     }
     let userDetails = await this.usersRepository.findOne({
-      where: whereClause
+      where: whereClause,
+      select: ["userId", "username", "name", "role", "district","state","mobile"]
     })
+
+    const tenentDetails = await this.allUsersTenent(userDetails.userId)
+
+    userDetails['tenantData'] = tenentDetails;
     return userDetails;
+
+  }
+  async allUsersTenent(userId: string){
+    const query = `
+    SELECT T.name AS tenantName, T."tenantId", UTM."Id" AS userTenantMappingId 
+    FROM public."UserTenantMapping" UTM 
+    LEFT JOIN public."Tenants" T 
+    ON T."tenantId" = UTM."tenantId" 
+    WHERE UTM."userId" = $1`;
+    const result = await this.usersRepository.query(query, [userId]);
+    return result;
   }
 
   async findCustomFields(userData, role) {
