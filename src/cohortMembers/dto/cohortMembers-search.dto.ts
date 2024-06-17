@@ -2,10 +2,10 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
 export class CohortMembersSearchDto {
   @ApiProperty({
-    type: String,
+    type: Number,
     description: "Limit",
   })
-  limit: string;
+  limit: number;
 
   @ApiProperty({
     type: Number,
@@ -16,10 +16,10 @@ export class CohortMembersSearchDto {
   @ApiProperty({
     type: Object,
     description: "Filters",
-    example: { cohortId: "", userId: "" }, // Adding example for Swagger
+    example: { cohortId: "", userId: "", role:"" }, // Adding example for Swagger
   })
   @ApiPropertyOptional()
-  filters: { cohortId?: string; userId?: string }; // Define cohortId and userId properties
+  filters: { cohortId?: string; userId?: string; role?: string }; // Define cohortId and userId properties
 
   constructor(partial: Partial<CohortMembersSearchDto>) {
     Object.assign(this, partial);
